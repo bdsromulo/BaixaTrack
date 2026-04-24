@@ -1,0 +1,23 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# FFmpeg binaries (auto-downloaded at runtime)
+ffmpeg_bin/
+
+# Virtual environment
+.venv/
+venv/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Temp / OS
+*.zip
+*.tmp
+.DS_Store
+Thumbs.db
+err.txt

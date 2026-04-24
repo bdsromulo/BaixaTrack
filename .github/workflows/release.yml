@@ -1,0 +1,66 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: |
+          pyinstaller `
+            --name "YouTube MP3 Extractor" `
+            --onedir `
+            --windowed `
+            --collect-all customtkinter `
+            --hidden-import PIL._tkinter_finder `
+            --hidden-import PIL._imagingtk `
+            --hidden-import yt_dlp `
+            --hidden-import downloader `
+            --hidden-import ffmpeg_manager `
+            --noconfirm `
+            app.py
+
+      - name: Zip the build
+        run: |
+          Compress-Archive `
+            -Path "dist\YouTube MP3 Extractor" `
+            -DestinationPath "YouTubeMP3Extractor.zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: YouTubeMP3Extractor.zip
+          name: YouTube MP3 Extractor ${{ github.ref_name }}
+          body: |
+            ## YouTube MP3 Extractor ${{ github.ref_name }}
+
+            ### Instalação rápida (Windows)
+            ```powershell
+            irm https://raw.githubusercontent.com/${{ github.repository }}/main/install.ps1 | iex
+            ```
+
+            ### Download manual
+            Baixe `YouTubeMP3Extractor.zip`, extraia e execute `YouTube MP3 Extractor.exe`.
+
+            > Na primeira execução, o FFmpeg será baixado automaticamente (~170 MB).
