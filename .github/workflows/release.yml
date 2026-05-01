@@ -26,12 +26,19 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Generate icon (logo.ico) from logo.png
+        run: |
+          python -c "from PIL import Image; Image.open('assets/logo.png').save('assets/logo.ico', format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+
       - name: Build executable
         run: |
           pyinstaller `
-            --name "YouTube MP3 Extractor" `
+            --name "BaixaTrack" `
             --onedir `
             --windowed `
+            --icon "assets/logo.ico" `
+            --add-data "assets/logo.ico;assets" `
+            --add-data "assets/logo.png;assets" `
             --collect-all customtkinter `
             --hidden-import PIL._tkinter_finder `
             --hidden-import PIL._imagingtk `
@@ -41,19 +48,27 @@ jobs:
             --noconfirm `
             app.py
 
-      - name: Zip the build
+      - name: Zip the portable build
         run: |
           Compress-Archive `
-            -Path "dist\YouTube MP3 Extractor" `
-            -DestinationPath "YouTubeMP3Extractor.zip"
+            -Path "dist\BaixaTrack" `
+            -DestinationPath "BaixaTrack-Portable.zip"
+
+      - name: Compile Inno Setup installer
+        # Inno Setup 6 já vem pré-instalado nos runners windows-latest do GitHub.
+        run: |
+          $tagVersion = "${{ github.ref_name }}".TrimStart("v")
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$tagVersion installer.iss
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: YouTubeMP3Extractor.zip
-          name: YouTube MP3 Extractor ${{ github.ref_name }}
+          files: |
+            dist/BaixaTrack-Setup.exe
+            BaixaTrack-Portable.zip
+          name: BaixaTrack ${{ github.ref_name }}
           body: |
-            ## YouTube MP3 Extractor ${{ github.ref_name }}
+            ## BaixaTrack ${{ github.ref_name }}
 
             ### Instalação rápida (Windows)
             ```powershell
@@ -61,6 +76,7 @@ jobs:
             ```
 
             ### Download manual
-            Baixe `YouTubeMP3Extractor.zip`, extraia e execute `YouTube MP3 Extractor.exe`.
+            - **Recomendado:** baixe `BaixaTrack-Setup.exe` — instalador com escolha de pasta, atalho opcional e desinstalador.
+            - **Portable:** baixe `BaixaTrack-Portable.zip`, extraia e execute `BaixaTrack.exe`.
 
             > Na primeira execução, o FFmpeg será baixado automaticamente (~170 MB).

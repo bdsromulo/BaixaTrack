@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 echo ================================================
-echo   YouTube MP3 Extractor - Instalação
+echo   BaixaTrack - Instalacao (modo desenvolvedor)
 echo ================================================
 echo.
 
@@ -63,12 +63,12 @@ if errorlevel 1 (
 echo [OK] Dependências instaladas.
 echo.
 
-:: Create run.bat
-echo Criando atalho de execução...
+:: Create run.bat (uses pythonw.exe to avoid the empty CMD window)
+echo Criando atalho de execucao...
 (
     echo @echo off
     echo cd /d "%~dp0"
-    echo .venv\Scripts\python app.py
+    echo start "" ".venv\Scripts\pythonw.exe" app.py
 ) > run.bat
 echo [OK] Atalho "run.bat" criado.
 echo.

@@ -21,3 +21,9 @@ dist/
 .DS_Store
 Thumbs.db
 err.txt
+
+# Claude Code local config (per-machine, not project source)
+.claude/
+
+# Generated icon (build.bat regenerates from assets/logo.png)
+assets/logo.ico

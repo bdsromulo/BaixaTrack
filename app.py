@@ -213,10 +213,11 @@ class TrackRow(ctk.CTkFrame):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("YouTube MP3 Extractor")
+        self.title("BaixaTrack")
         self.geometry("820x700")
         self.minsize(720, 580)
         self.configure(fg_color=BG_DARK)
+        self._apply_window_icon()
 
         self.downloader = YoutubeDownloader()
         self._entries: list = []
@@ -227,6 +228,14 @@ class App(ctk.CTk):
         self._build_ui()
         # Check FFmpeg 300ms after window appears (non-blocking)
         self.after(300, self._check_ffmpeg)
+
+    def _apply_window_icon(self):
+        ico_path = resource_path(os.path.join("assets", "logo.ico"))
+        if os.path.exists(ico_path):
+            try:
+                self.iconbitmap(default=ico_path)
+            except tk.TclError:
+                pass
 
     # ── FFmpeg check ───────────────────────────────────────────────────────────
     def _check_ffmpeg(self):

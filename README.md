@@ -27,9 +27,22 @@ Abra o **PowerShell** e execute:
 irm https://raw.githubusercontent.com/bdsromulo/BaixaTrack/main/install.ps1 | iex
 ```
 
-O script detecta automaticamente se há uma versão compilada disponível e, caso haja, instala o executável diretamente. Se não, faz a instalação via Python. Em ambos os casos, um atalho é criado na sua Área de Trabalho.
+O script baixa o instalador oficial mais recente do GitHub Releases e abre o assistente de instalação, onde você pode escolher a pasta de instalação, decidir se quer um atalho na Área de Trabalho e executar o app ao terminar. Caso ainda não exista release publicada, o script faz fallback para uma instalação via Python (sem janela de console).
 
 > O **FFmpeg** (motor de conversão de áudio) é baixado automaticamente na primeira execução do app — nenhuma instalação manual necessária.
+
+---
+
+## ⚠️ Aviso do SmartScreen do Windows
+
+Como o instalador não é assinado com certificado de code signing (custo anual de centenas de dólares), o Windows pode exibir uma tela azul **"O Windows protegeu seu computador"** na primeira execução.
+
+Para prosseguir:
+
+1. Clique em **"Mais informações"** na parte inferior do aviso
+2. Clique em **"Executar mesmo assim"**
+
+Isso só acontece na primeira vez. Não é um erro nem indício de malware — é o comportamento padrão do SmartScreen para qualquer executável sem reputação registrada na Microsoft. O código-fonte completo está aberto neste repositório.
 
 ---
 
@@ -41,9 +54,13 @@ BaixaTrack/
 ├── downloader.py                  # Módulo de extração e download de áudio
 ├── ffmpeg_manager.py              # Gerenciamento e auto-download do FFmpeg
 ├── requirements.txt               # Dependências do projeto
-├── build.bat                      # Script de compilação para Windows
+├── build.bat                      # Script de compilação (PyInstaller + Inno Setup)
+├── installer.iss                  # Script Inno Setup que gera o BaixaTrack-Setup.exe
 ├── install.ps1                    # Instalador PowerShell one-liner
 ├── install.bat                    # Instalador batch alternativo
+├── assets/
+│   ├── logo.png                   # Logo original
+│   └── logo.ico                   # Ícone multi-resolução (gerado pelo build)
 └── .github/
     └── workflows/
         └── release.yml            # Pipeline CI/CD para build automático
@@ -108,17 +125,24 @@ python app.py
 
 ---
 
-## 📦 Gerar executável `.exe`
+## 📦 Gerar executável `.exe` e instalador
 
 ```bash
 build.bat
 ```
 
-Gera `dist\YouTube MP3 Extractor\YouTube MP3 Extractor.exe` com todas as dependências empacotadas.
+Gera dois artefatos:
+
+| Artefato | Caminho | Descrição |
+|---|---|---|
+| **Pasta portátil** | `dist\BaixaTrack\` | App empacotado com todas as dependências (executar `BaixaTrack.exe`) |
+| **Instalador** | `dist\BaixaTrack-Setup.exe` | Instalador gráfico com escolha de pasta, atalho opcional, executar ao final e desinstalador no Painel de Controle |
+
+> Para gerar o instalador é preciso ter o **Inno Setup 6** instalado (`winget install JRSoftware.InnoSetup`). Sem ele, o `build.bat` ainda gera a pasta portátil normalmente.
 
 ### Build e release automáticos (GitHub Actions)
 
-Ao fazer push de uma tag de versão, o pipeline compila o executável e publica como GitHub Release:
+Ao fazer push de uma tag de versão, o pipeline compila o executável, monta o instalador via Inno Setup e publica ambos como GitHub Release:
 
 ```bash
 git tag v1.0.0

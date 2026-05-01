@@ -28,7 +28,7 @@ def _app_dir() -> str:
 
 def _appdata_dir() -> str:
     base = os.environ.get("APPDATA", os.path.expanduser("~"))
-    return os.path.join(base, "YouTubeMP3Extractor")
+    return os.path.join(base, "BaixaTrack")
 
 
 # ── Detection ──────────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ def is_ffmpeg_available() -> bool:
 
 def download_ffmpeg(on_progress=None, on_done=None, on_error=None):
     """
-    Download FFmpeg to %APPDATA%\\YouTubeMP3Extractor\\ffmpeg_bin\\ in a thread.
+    Download FFmpeg to %APPDATA%\\BaixaTrack\\ffmpeg_bin\\ in a thread.
 
     Callbacks (all optional, called from the download thread):
         on_progress(pct: float)  0-100
