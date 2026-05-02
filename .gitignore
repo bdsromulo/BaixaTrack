@@ -27,3 +27,10 @@ err.txt
 
 # Generated icon (build.bat regenerates from assets/logo.png)
 assets/logo.ico
+
+# Per-user credentials/history — normally stored in %APPDATA%\BaixaTrack,
+# but never commit a stray local copy
+config.json
+history.json
+spotify.json
+.env

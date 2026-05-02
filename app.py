@@ -7,6 +7,8 @@ Compatible with PyInstaller (sys._MEIPASS resource paths).
 import os
 import sys
 import threading
+import time
+import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -17,6 +19,10 @@ from io import BytesIO
 
 from downloader import YoutubeDownloader, DownloadError
 import ffmpeg_manager
+import history
+import config
+import spotify
+import spotify_auth
 
 # ── PyInstaller resource helper ────────────────────────────────────────────────
 def resource_path(rel: str) -> str:
@@ -153,13 +159,196 @@ class FFmpegSetupDialog(ctk.CTkToplevel):
         self.on_complete()
 
 
+# ── Settings Dialog ────────────────────────────────────────────────────────────
+class SettingsDialog(ctk.CTkToplevel):
+    """Per-user settings — Spotify integration via PKCE."""
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("Configurações")
+        self.geometry("580x520")
+        self.resizable(False, False)
+        self.configure(fg_color=BG_CARD)
+        self.grab_set()
+
+        self.update_idletasks()
+        x = master.winfo_x() + (master.winfo_width()  - 580) // 2
+        y = master.winfo_y() + (master.winfo_height() - 520) // 2
+        self.geometry(f"+{x}+{y}")
+
+        self.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            self, text="🎵  Conta Spotify",
+            font=("Inter", 16, "bold"), text_color=TEXT_MAIN
+        ).grid(row=0, column=0, pady=(24, 4), padx=24, sticky="w")
+
+        ctk.CTkLabel(
+            self,
+            text=(
+                "O BaixaTrack usa o fluxo PKCE do Spotify (login no navegador).\n"
+                "Você precisa criar um app gratuito no painel do Spotify uma vez:\n\n"
+                "1. Acesse developer.spotify.com/dashboard e crie um app\n"
+                "2. Em \"Which API/SDKs\" marque apenas Web API\n"
+                "3. Em Redirect URIs adicione: http://127.0.0.1:8888/callback\n"
+                "4. Copie o Client ID abaixo (Client Secret NÃO é necessário)\n"
+                "5. Clique em \"Conectar com Spotify\" — o navegador abrirá."
+            ),
+            font=("Inter", 11), text_color=TEXT_SUB,
+            justify="left", anchor="w", wraplength=520,
+        ).grid(row=1, column=0, padx=24, pady=(0, 12), sticky="w")
+
+        cid = config.get_spotify_client_id() or ""
+
+        ctk.CTkLabel(self, text="Client ID", font=("Inter", 12, "bold"),
+                     text_color=TEXT_SUB).grid(row=2, column=0, padx=24, sticky="w")
+        self.id_entry = ctk.CTkEntry(
+            self, height=36, font=("Inter", 12),
+            fg_color=BG_ITEM, border_color="#333333", text_color=TEXT_MAIN,
+        )
+        self.id_entry.grid(row=3, column=0, padx=24, pady=(2, 12), sticky="ew")
+        self.id_entry.insert(0, cid)
+
+        # Status row
+        status_frame = ctk.CTkFrame(self, fg_color=BG_ITEM, corner_radius=8)
+        status_frame.grid(row=4, column=0, padx=24, pady=(4, 8), sticky="ew")
+        status_frame.grid_columnconfigure(0, weight=1)
+
+        self.status_lbl = ctk.CTkLabel(
+            status_frame, text="", font=("Inter", 12),
+            text_color=TEXT_MAIN, anchor="w",
+        )
+        self.status_lbl.grid(row=0, column=0, padx=12, pady=10, sticky="w")
+        self._refresh_status()
+
+        # Action buttons
+        action_row = ctk.CTkFrame(self, fg_color="transparent")
+        action_row.grid(row=5, column=0, padx=24, pady=(0, 8), sticky="ew")
+        action_row.grid_columnconfigure(0, weight=1)
+
+        self.connect_btn = ctk.CTkButton(
+            action_row, text="🔗  Conectar com Spotify", height=40,
+            font=("Inter", 13, "bold"),
+            fg_color="#1DB954", hover_color="#1AA34A",
+            command=self._connect,
+        )
+        self.connect_btn.grid(row=0, column=0, sticky="ew")
+
+        self.disconnect_btn = ctk.CTkButton(
+            action_row, text="Desconectar", height=32,
+            font=("Inter", 11), fg_color=BG_ITEM, hover_color="#333333",
+            text_color=TEXT_MAIN, command=self._disconnect,
+        )
+        self.disconnect_btn.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+
+        # Bottom buttons
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.grid(row=6, column=0, padx=24, pady=(16, 16), sticky="ew")
+        btn_row.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkButton(
+            btn_row, text="Fechar", width=100, height=36,
+            font=("Inter", 12, "bold"),
+            fg_color=ACCENT, hover_color="#DC2626",
+            command=self.destroy,
+        ).grid(row=0, column=0, sticky="e")
+
+    def _refresh_status(self):
+        if config.is_spotify_connected():
+            self.status_lbl.configure(
+                text="✓  Conectado ao Spotify", text_color=GREEN
+            )
+        elif config.get_spotify_client_id():
+            self.status_lbl.configure(
+                text="•  Client ID salvo, falta conectar", text_color=YELLOW
+            )
+        else:
+            self.status_lbl.configure(
+                text="✗  Nenhum Client ID configurado", text_color=TEXT_SUB
+            )
+
+    def _connect(self):
+        cid = self.id_entry.get().strip()
+        if not cid:
+            messagebox.showwarning(
+                "Atenção", "Preencha o Client ID antes de conectar.", parent=self
+            )
+            return
+        try:
+            config.set_spotify_client_id(cid)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível salvar Client ID: {e}", parent=self)
+            return
+
+        self.connect_btn.configure(state="disabled", text="Aguardando navegador…")
+        threading.Thread(target=self._connect_worker, args=(cid,), daemon=True).start()
+
+    def _connect_worker(self, client_id: str):
+        def status_cb(msg: str):
+            self.after(0, lambda: self.connect_btn.configure(text=msg))
+
+        try:
+            tokens = spotify_auth.perform_login(client_id, on_status=status_cb)
+        except spotify_auth.SpotifyAuthError as e:
+            err = str(e)
+            self.after(0, lambda: self._on_connect_error(err))
+            return
+        except Exception as e:
+            err = repr(e)
+            self.after(0, lambda: self._on_connect_error(err))
+            return
+
+        access = tokens.get("access_token")
+        refresh = tokens.get("refresh_token")
+        expires_at = time.time() + int(tokens.get("expires_in", 3600))
+        if not access or not refresh:
+            self.after(0, lambda: self._on_connect_error(
+                "Resposta do Spotify sem tokens completos."
+            ))
+            return
+        try:
+            config.set_spotify_tokens(access, refresh, expires_at)
+        except Exception as e:
+            err = str(e)
+            self.after(0, lambda: self._on_connect_error(f"Falha ao salvar tokens: {err}"))
+            return
+        self.after(0, self._on_connect_done)
+
+    def _on_connect_done(self):
+        self.connect_btn.configure(state="normal", text="🔗  Conectar com Spotify")
+        self._refresh_status()
+        messagebox.showinfo(
+            "Spotify", "Conectado com sucesso!", parent=self
+        )
+
+    def _on_connect_error(self, msg: str):
+        self.connect_btn.configure(state="normal", text="🔗  Conectar com Spotify")
+        self._refresh_status()
+        messagebox.showerror("Falha ao conectar", msg, parent=self)
+
+    def _disconnect(self):
+        if not messagebox.askyesno(
+            "Confirmar",
+            "Remover Client ID e tokens do Spotify deste computador?",
+            parent=self,
+        ):
+            return
+        try:
+            config.clear_spotify_credentials()
+        except Exception:
+            pass
+        self.id_entry.delete(0, "end")
+        self._refresh_status()
+
+
 # ── Track row widget ───────────────────────────────────────────────────────────
 class TrackRow(ctk.CTkFrame):
-    def __init__(self, master, index: int, entry: dict, **kwargs):
+    def __init__(self, master, index: int, entry: dict, already_downloaded: bool = False, **kwargs):
         super().__init__(master, fg_color=BG_ITEM, corner_radius=8, **kwargs)
         self.entry = entry
         self.index = index
-        self.var = tk.BooleanVar(value=True)
+        self.already_downloaded = already_downloaded
+        self.var = tk.BooleanVar(value=not already_downloaded)
 
         self.grid_columnconfigure(2, weight=1)
 
@@ -185,9 +374,14 @@ class TrackRow(ctk.CTkFrame):
 
         self.status_lbl = ctk.CTkLabel(
             self, text="", text_color=TEXT_SUB,
-            font=("Inter", 10, "bold"), width=70
+            font=("Inter", 10, "bold"), width=110
         )
         self.status_lbl.grid(row=0, column=4, padx=(0, 10))
+
+        if already_downloaded:
+            self.set_status("↻ Já baixado", TEXT_SUB)
+        elif entry.get("_spotify_origin"):
+            self.set_status("🎵 via Spotify", "#1DB954")
 
     def set_status(self, text: str, color: str = TEXT_SUB):
         self.status_lbl.configure(text=text, text_color=color)
@@ -257,6 +451,13 @@ class App(ctk.CTk):
             font=("Inter", 20, "bold"), text_color=ACCENT
         ).grid(row=0, column=0, padx=20, pady=16)
 
+        ctk.CTkButton(
+            header, text="⚙  Configurações", width=140, height=32,
+            font=("Inter", 12), fg_color=BG_ITEM, hover_color="#333333",
+            text_color=TEXT_MAIN,
+            command=self._open_settings
+        ).grid(row=0, column=2, padx=20, pady=16, sticky="e")
+
         # ── URL bar ──
         url_frame = ctk.CTkFrame(self, fg_color=BG_CARD, corner_radius=12)
         url_frame.grid(row=1, column=0, padx=16, pady=(12, 6), sticky="ew")
@@ -267,7 +468,7 @@ class App(ctk.CTk):
                      ).grid(row=0, column=0, columnspan=2, padx=16, pady=(12, 4), sticky="w")
 
         self.url_entry = ctk.CTkEntry(
-            url_frame, placeholder_text="https://www.youtube.com/watch?v=... ou playlist",
+            url_frame, placeholder_text="YouTube (vídeo/playlist) ou Spotify (playlist pública)",
             font=("Inter", 13), height=42,
             fg_color=BG_ITEM, border_color="#333333", text_color=TEXT_MAIN
         )
@@ -280,7 +481,15 @@ class App(ctk.CTk):
             fg_color=ACCENT, hover_color="#DC2626",
             command=self._on_fetch
         )
-        self.fetch_btn.grid(row=1, column=1, padx=(0, 16), pady=(0, 12))
+        self.fetch_btn.grid(row=1, column=1, padx=(0, 8), pady=(0, 12))
+
+        self.clear_btn = ctk.CTkButton(
+            url_frame, text="Limpar", width=90, height=42,
+            font=("Inter", 13),
+            fg_color=BG_ITEM, hover_color="#333333", text_color=TEXT_MAIN,
+            command=self._clear_selection
+        )
+        self.clear_btn.grid(row=1, column=2, padx=(0, 16), pady=(0, 12))
 
         # ── Info card ──
         self.info_frame = ctk.CTkFrame(self, fg_color=BG_CARD, corner_radius=12)
@@ -321,6 +530,15 @@ class App(ctk.CTk):
             font=("Inter", 11), fg_color="#333333", hover_color="#444444",
             command=self._deselect_all
         ).pack(side="left")
+
+        self.include_downloaded_var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            sel_frame, text="Incluir vídeos já baixados anteriormente",
+            variable=self.include_downloaded_var,
+            font=("Inter", 11), text_color=TEXT_SUB,
+            fg_color=ACCENT, hover_color="#DC2626", border_color="#555555",
+            command=self._on_toggle_include_downloaded,
+        ).pack(side="left", padx=(16, 0))
 
         # ── Track list ──
         list_outer = ctk.CTkFrame(self, fg_color=BG_CARD, corner_radius=12)
@@ -393,8 +611,26 @@ class App(ctk.CTk):
     def _on_fetch(self):
         url = self.url_entry.get().strip()
         if not url:
-            messagebox.showwarning("Atenção", "Digite uma URL do YouTube.")
+            messagebox.showwarning("Atenção", "Digite uma URL do YouTube ou Spotify.")
             return
+
+        if spotify.is_spotify_url(url):
+            if not config.is_spotify_connected():
+                messagebox.showwarning(
+                    "Spotify não conectado",
+                    "Conecte sua conta do Spotify em ⚙ Configurações primeiro."
+                )
+                self._open_settings()
+                return
+            self.fetch_btn.configure(state="disabled", text="Buscando…")
+            self._set_status("Lendo playlist do Spotify…", YELLOW)
+            threading.Thread(
+                target=self._fetch_spotify_worker,
+                args=(url,),
+                daemon=True,
+            ).start()
+            return
+
         self.fetch_btn.configure(state="disabled", text="Buscando…")
         self._set_status("Obtendo informações…", YELLOW)
         threading.Thread(target=self._fetch_worker, args=(url,), daemon=True).start()
@@ -404,7 +640,59 @@ class App(ctk.CTk):
             info = self.downloader.get_info(url)
             self.after(0, lambda: self._on_fetch_done(info))
         except Exception as e:
-            self.after(0, lambda: self._on_fetch_error(str(e)))
+            msg = str(e) or repr(e)
+            traceback.print_exc()
+            self.after(0, lambda m=msg: self._on_fetch_error(m))
+
+    def _fetch_spotify_worker(self, url: str):
+        try:
+            playlist = spotify.fetch_playlist(url)
+        except spotify.SpotifyError as e:
+            msg = str(e) or repr(e)
+            traceback.print_exc()
+            self.after(0, lambda m=msg: self._on_fetch_error(m))
+            return
+        except Exception as e:
+            msg = f"Erro inesperado ao buscar playlist: {e!r}"
+            traceback.print_exc()
+            self.after(0, lambda m=msg: self._on_fetch_error(m))
+            return
+
+        tracks = playlist["tracks"]
+        if not tracks:
+            self.after(0, lambda: self._on_fetch_error("Playlist do Spotify vazia."))
+            return
+
+        total = len(tracks)
+        self.after(0, lambda: self._set_status(
+            f"Buscando 0/{total} no YouTube…", "#60A5FA"
+        ))
+
+        def on_prog(done, tot, label):
+            self.after(0, lambda: self._set_status(
+                f"Buscando {done}/{tot} no YouTube… ({label})", "#60A5FA"
+            ))
+
+        try:
+            entries = spotify.search_youtube_for_tracks(tracks, on_progress=on_prog)
+        except Exception as e:
+            msg = f"Erro na busca do YouTube: {e!r}"
+            traceback.print_exc()
+            self.after(0, lambda m=msg: self._on_fetch_error(m))
+            return
+
+        if not entries:
+            self.after(0, lambda: self._on_fetch_error(
+                "Nenhuma faixa correspondente encontrada no YouTube."
+            ))
+            return
+
+        info = {
+            "type": "playlist",
+            "title": f"🎵 {playlist['name']} (via Spotify)",
+            "entries": entries,
+        }
+        self.after(0, lambda: self._on_fetch_done(info))
 
     def _on_fetch_done(self, info: dict):
         self.fetch_btn.configure(state="normal", text="Buscar")
@@ -425,7 +713,10 @@ class App(ctk.CTk):
         self.dl_btn.configure(state="normal")
         self._set_status(f"{n} faixa{'s' if n != 1 else ''} encontrada{'s' if n != 1 else ''}.", GREEN)
 
-    def _on_fetch_error(self, msg: str):
+    def _on_fetch_error(self, msg):
+        if not msg:
+            msg = "Erro desconhecido (veja o terminal para detalhes)."
+        msg = str(msg)
         self.fetch_btn.configure(state="normal", text="Buscar")
         self._set_status(f"Erro: {msg}", ACCENT)
         messagebox.showerror("Erro ao buscar", msg)
@@ -442,11 +733,26 @@ class App(ctk.CTk):
         self._track_rows.clear()
         self.empty_lbl.grid_remove()
 
+        include_dl = self.include_downloaded_var.get()
         for i, entry in enumerate(self._entries):
-            row = TrackRow(self.track_scroll, index=i, entry=entry)
+            already = history.is_downloaded(entry.get("id", ""))
+            row = TrackRow(
+                self.track_scroll, index=i, entry=entry,
+                already_downloaded=already and not include_dl,
+            )
+            if already and include_dl:
+                row.set_status("↻ Já baixado", TEXT_SUB)
             row.grid(row=i, column=0, padx=4, pady=3, sticky="ew")
             self.track_scroll.grid_columnconfigure(0, weight=1)
             self._track_rows.append(row)
+
+    def _on_toggle_include_downloaded(self):
+        """Re-apply selection rules when toggle flips, without rebuilding the list."""
+        include_dl = self.include_downloaded_var.get()
+        for row in self._track_rows:
+            vid = row.entry.get("id", "")
+            if history.is_downloaded(vid):
+                row.var.set(include_dl)
 
     # ── Download ───────────────────────────────────────────────────────────────
     def _on_download(self):
@@ -488,6 +794,11 @@ class App(ctk.CTk):
         def on_entry_done(idx, total, title, folder):
             nonlocal done_count
             done_count += 1
+            entry = self._track_rows[idx].entry
+            try:
+                history.mark_downloaded(entry.get("id", ""), title, folder)
+            except Exception:
+                pass
             self.after(0, lambda: self._track_rows[idx].set_done())
             self.after(0, lambda: self.progress_bar.set(done_count / total))
 
@@ -521,10 +832,32 @@ class App(ctk.CTk):
             os.startfile(out_dir)
 
     # ── Helpers ────────────────────────────────────────────────────────────────
+    def _open_settings(self):
+        SettingsDialog(self)
+
     def _choose_folder(self):
         folder = filedialog.askdirectory(initialdir=self.folder_var.get())
         if folder:
             self.folder_var.set(folder)
+
+    def _clear_selection(self):
+        if self._is_downloading:
+            messagebox.showwarning("Atenção", "Aguarde o download terminar antes de limpar.")
+            return
+        self.url_entry.delete(0, "end")
+        for row in self._track_rows:
+            row.destroy()
+        self._track_rows.clear()
+        self._entries = []
+        self.info_frame.grid_remove()
+        self.info_title.configure(text="")
+        self.info_sub.configure(text="")
+        self.thumb_lbl.configure(image="", text="")
+        self._thumb_ref = None
+        self.empty_lbl.grid(row=0, column=0, pady=40)
+        self.dl_btn.configure(state="disabled")
+        self.progress_bar.set(0)
+        self._set_status("Pronto")
 
     def _select_all(self):
         for row in self._track_rows:
