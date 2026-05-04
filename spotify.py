@@ -12,6 +12,7 @@ Compliance notes (Spotify Developer Terms + Web API guidelines):
 """
 
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
@@ -120,10 +121,18 @@ def _spotify_get(url: str, headers: dict, params: dict | None = None) -> request
 
 
 # ── Playlist fetch ─────────────────────────────────────────────────────────────
-def fetch_playlist(url: str) -> dict:
+def fetch_playlist(
+    url: str,
+    on_page=None,
+    cancel_event: "threading.Event | None" = None,
+) -> dict:
     """
     Returns {"name": str, "tracks": [{"name": str, "artist": str}, ...]}.
     Uses /v1/playlists/{id}/items with a user access token (PKCE).
+
+    on_page(loaded:int, total:int) is invoked after each page so the GUI can
+    show progress on very large playlists. cancel_event, if set between pages,
+    short-circuits the loop and returns whatever was collected so far.
     """
     pid = extract_playlist_id(url)
     if not pid:
@@ -161,8 +170,11 @@ def fetch_playlist(url: str) -> dict:
     }
     next_url: str | None = items_url
     refreshed_once = False
+    total_items = 0
 
     while next_url:
+        if cancel_event is not None and cancel_event.is_set():
+            break
         # Use params only for the first call; subsequent next_url already has them encoded.
         r = _spotify_get(next_url, headers=headers, params=params if next_url == items_url else None)
 
@@ -202,6 +214,8 @@ def fetch_playlist(url: str) -> dict:
                 f"Mensagem da API: {api_msg}{hint}"
             )
         body = r.json()
+        if not total_items:
+            total_items = int(body.get("total") or 0)
         items = body.get("items", []) or []
         for item in items:
             # Spotify returns track data under "track" by default, but uses
@@ -219,13 +233,17 @@ def fetch_playlist(url: str) -> dict:
             if not (tname and aname):
                 continue
             tracks.append({"name": tname, "artist": aname})
+        if on_page:
+            on_page(len(tracks), total_items or len(tracks))
         next_url = body.get("next")
 
     return {"name": name, "tracks": tracks}
 
 
 # ── YouTube search ─────────────────────────────────────────────────────────────
-def _search_one(track: dict) -> dict | None:
+def _search_one(track: dict, cancel_event: "threading.Event | None" = None) -> dict | None:
+    if cancel_event is not None and cancel_event.is_set():
+        return None
     query = f"ytsearch1:{track['name']} {track['artist']} (AUDIO)"
     opts = {
         "quiet": True,
@@ -265,19 +283,31 @@ def search_youtube_for_tracks(
     tracks: list[dict],
     on_progress=None,
     max_workers: int = 5,
+    cancel_event: "threading.Event | None" = None,
 ) -> list[dict]:
     """
     Returns entries in the same format as downloader.get_info.
     Tracks with no YouTube match are skipped silently.
     on_progress(done:int, total:int, current_label:str)
+
+    If cancel_event is set during the run, queued futures are cancelled and the
+    function returns whatever was matched up to that point (already in playlist
+    order). The 5 in-flight yt-dlp lookups still complete before return.
     """
     results: list[tuple[int, dict]] = []
     total = len(tracks)
     done = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {ex.submit(_search_one, t): (i, t) for i, t in enumerate(tracks)}
+        futures = {
+            ex.submit(_search_one, t, cancel_event): (i, t)
+            for i, t in enumerate(tracks)
+        }
+        cancelled = False
         for fut in as_completed(futures):
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
             i, t = futures[fut]
             entry = fut.result()
             done += 1
@@ -285,6 +315,9 @@ def search_youtube_for_tracks(
                 on_progress(done, total, f"{t['name']} - {t['artist']}")
             if entry:
                 results.append((i, entry))
+        if cancelled:
+            for f in futures:
+                f.cancel()
 
     results.sort(key=lambda x: x[0])
     return [e for _, e in results]

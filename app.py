@@ -418,6 +418,8 @@ class App(ctk.CTk):
         self._track_rows: list = []
         self._is_downloading = False
         self._thumb_ref = None
+        self._build_gen = 0
+        self._fetch_cancel: threading.Event | None = None
 
         self._build_ui()
         # Check FFmpeg 300ms after window appears (non-blocking)
@@ -622,11 +624,12 @@ class App(ctk.CTk):
                 )
                 self._open_settings()
                 return
-            self.fetch_btn.configure(state="disabled", text="Buscando…")
+            cancel_event = threading.Event()
+            self._enter_fetch_mode(cancel_event)
             self._set_status("Lendo playlist do Spotify…", YELLOW)
             threading.Thread(
                 target=self._fetch_spotify_worker,
-                args=(url,),
+                args=(url, cancel_event),
                 daemon=True,
             ).start()
             return
@@ -634,6 +637,29 @@ class App(ctk.CTk):
         self.fetch_btn.configure(state="disabled", text="Buscando…")
         self._set_status("Obtendo informações…", YELLOW)
         threading.Thread(target=self._fetch_worker, args=(url,), daemon=True).start()
+
+    # ── Cancellable Spotify fetch UI ───────────────────────────────────────────
+    def _enter_fetch_mode(self, cancel_event: threading.Event):
+        self._fetch_cancel = cancel_event
+        self.fetch_btn.configure(
+            state="normal", text="✕ Cancelar",
+            fg_color=BG_ITEM, hover_color="#333333",
+            command=self._on_fetch_cancel,
+        )
+
+    def _exit_fetch_mode(self):
+        self._fetch_cancel = None
+        self.fetch_btn.configure(
+            state="normal", text="Buscar",
+            fg_color=ACCENT, hover_color="#DC2626",
+            command=self._on_fetch,
+        )
+
+    def _on_fetch_cancel(self):
+        if self._fetch_cancel:
+            self._fetch_cancel.set()
+            self.fetch_btn.configure(state="disabled", text="Cancelando…")
+            self._set_status("Cancelando…", YELLOW)
 
     def _fetch_worker(self, url: str):
         try:
@@ -644,9 +670,21 @@ class App(ctk.CTk):
             traceback.print_exc()
             self.after(0, lambda m=msg: self._on_fetch_error(m))
 
-    def _fetch_spotify_worker(self, url: str):
+    def _fetch_spotify_worker(self, url: str, cancel_event: threading.Event):
+        # Throttled status updater — coalesces rapid callbacks into at most one
+        # GUI update every ~200ms (or every 25 items) so the Tk event queue
+        # stays responsive on multi-thousand-track playlists.
+        page_state = {"ts": 0.0}
+        def on_page(loaded, total):
+            now = time.time()
+            if loaded == total or (now - page_state["ts"]) > 0.2:
+                page_state["ts"] = now
+                self.after(0, lambda l=loaded, t=total: self._set_status(
+                    f"Lendo playlist do Spotify… {l}/{t}", YELLOW
+                ))
+
         try:
-            playlist = spotify.fetch_playlist(url)
+            playlist = spotify.fetch_playlist(url, on_page=on_page, cancel_event=cancel_event)
         except spotify.SpotifyError as e:
             msg = str(e) or repr(e)
             traceback.print_exc()
@@ -656,6 +694,10 @@ class App(ctk.CTk):
             msg = f"Erro inesperado ao buscar playlist: {e!r}"
             traceback.print_exc()
             self.after(0, lambda m=msg: self._on_fetch_error(m))
+            return
+
+        if cancel_event.is_set():
+            self.after(0, self._on_fetch_cancelled)
             return
 
         tracks = playlist["tracks"]
@@ -668,17 +710,28 @@ class App(ctk.CTk):
             f"Buscando 0/{total} no YouTube…", "#60A5FA"
         ))
 
+        prog_state = {"done": 0, "ts": 0.0}
         def on_prog(done, tot, label):
-            self.after(0, lambda: self._set_status(
-                f"Buscando {done}/{tot} no YouTube… ({label})", "#60A5FA"
-            ))
+            now = time.time()
+            if done == tot or done - prog_state["done"] >= 25 or (now - prog_state["ts"]) > 0.2:
+                prog_state["done"] = done
+                prog_state["ts"] = now
+                self.after(0, lambda d=done, tt=tot, l=label: self._set_status(
+                    f"Buscando {d}/{tt} no YouTube… ({l})", "#60A5FA"
+                ))
 
         try:
-            entries = spotify.search_youtube_for_tracks(tracks, on_progress=on_prog)
+            entries = spotify.search_youtube_for_tracks(
+                tracks, on_progress=on_prog, cancel_event=cancel_event,
+            )
         except Exception as e:
             msg = f"Erro na busca do YouTube: {e!r}"
             traceback.print_exc()
             self.after(0, lambda m=msg: self._on_fetch_error(m))
+            return
+
+        if cancel_event.is_set():
+            self.after(0, self._on_fetch_cancelled)
             return
 
         if not entries:
@@ -695,7 +748,7 @@ class App(ctk.CTk):
         self.after(0, lambda: self._on_fetch_done(info))
 
     def _on_fetch_done(self, info: dict):
-        self.fetch_btn.configure(state="normal", text="Buscar")
+        self._exit_fetch_mode()
         self._entries = info["entries"]
 
         self.info_title.configure(text=info["title"])
@@ -709,17 +762,23 @@ class App(ctk.CTk):
             if thumb_url:
                 threading.Thread(target=self._load_thumb, args=(thumb_url,), daemon=True).start()
 
-        self._build_track_list()
-        self.dl_btn.configure(state="normal")
-        self._set_status(f"{n} faixa{'s' if n != 1 else ''} encontrada{'s' if n != 1 else ''}.", GREEN)
+        plural = 's' if n != 1 else ''
+        def _done():
+            self.dl_btn.configure(state="normal")
+            self._set_status(f"{n} faixa{plural} encontrada{plural}.", GREEN)
+        self._build_track_list(on_complete=_done)
 
     def _on_fetch_error(self, msg):
         if not msg:
             msg = "Erro desconhecido (veja o terminal para detalhes)."
         msg = str(msg)
-        self.fetch_btn.configure(state="normal", text="Buscar")
+        self._exit_fetch_mode()
         self._set_status(f"Erro: {msg}", ACCENT)
         messagebox.showerror("Erro ao buscar", msg)
+
+    def _on_fetch_cancelled(self):
+        self._exit_fetch_mode()
+        self._set_status("Busca cancelada.", TEXT_SUB)
 
     def _load_thumb(self, url: str):
         photo = load_thumbnail(url, (80, 60))
@@ -727,14 +786,31 @@ class App(ctk.CTk):
             self.after(0, lambda: self.thumb_lbl.configure(image=photo, text=""))
             self._thumb_ref = photo
 
-    def _build_track_list(self):
+    def _build_track_list(self, on_complete=None):
+        # Bumping the generation invalidates any batch still scheduled via after().
+        self._build_gen += 1
         for row in self._track_rows:
             row.destroy()
         self._track_rows.clear()
         self.empty_lbl.grid_remove()
+        self.track_scroll.grid_columnconfigure(0, weight=1)
 
+        if not self._entries:
+            if on_complete:
+                on_complete()
+            return
+
+        self._build_track_list_batch(0, self._build_gen, on_complete)
+
+    def _build_track_list_batch(self, start: int, gen: int, on_complete, batch_size: int = 40):
+        # A newer fetch (or a clear) has bumped the generation — drop this batch.
+        if gen != self._build_gen:
+            return
         include_dl = self.include_downloaded_var.get()
-        for i, entry in enumerate(self._entries):
+        n = len(self._entries)
+        end = min(start + batch_size, n)
+        for i in range(start, end):
+            entry = self._entries[i]
             already = history.is_downloaded(entry.get("id", ""))
             row = TrackRow(
                 self.track_scroll, index=i, entry=entry,
@@ -743,8 +819,12 @@ class App(ctk.CTk):
             if already and include_dl:
                 row.set_status("↻ Já baixado", TEXT_SUB)
             row.grid(row=i, column=0, padx=4, pady=3, sticky="ew")
-            self.track_scroll.grid_columnconfigure(0, weight=1)
             self._track_rows.append(row)
+        if end < n:
+            self._set_status(f"Montando lista… {end}/{n}", "#60A5FA")
+            self.after(1, lambda: self._build_track_list_batch(end, gen, on_complete, batch_size))
+        elif on_complete:
+            on_complete()
 
     def _on_toggle_include_downloaded(self):
         """Re-apply selection rules when toggle flips, without rebuilding the list."""
@@ -845,6 +925,8 @@ class App(ctk.CTk):
             messagebox.showwarning("Atenção", "Aguarde o download terminar antes de limpar.")
             return
         self.url_entry.delete(0, "end")
+        # Invalidate any in-flight batch builder so its leftover after() calls bail out.
+        self._build_gen += 1
         for row in self._track_rows:
             row.destroy()
         self._track_rows.clear()
